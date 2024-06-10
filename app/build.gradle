@@ -4,11 +4,13 @@ plugins {
 
 android {
     namespace 'org.vi_server.wgserver'
+    //noinspection GradleDependency
     compileSdk 32
 
     defaultConfig {
         applicationId "org.vi_server.wgserver"
         minSdk 21
+        //noinspection ExpiredTargetSdkVersion
         targetSdk 32
         versionCode 1
         versionName "1.0"
@@ -24,6 +26,7 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+    ndkVersion '27.0.11902837 rc2'
 }
 
 dependencies {

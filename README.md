@@ -16,6 +16,9 @@ Basically it is [wgslirpy](https://github.com/vi/wgslirpy) tool, but as an Andro
 # Usage steps
 
 1. Build the app from source code or download it from releases
+   - `rustup target add aarch64-linux-android`
+   - `cargo install cargo-ndk`
+   - `cargo ndk -t arm64-v8a -o ..\app\src\main\jniLibs\  build`
 2. Launch
 3. Press "Sample config". Obviously, do not use that private key for real.
 4. Adjust IP addresses and keys. Remove unnesesary settings. When in doubt, experiment with `wgslirpy` CLI tool first to familiarize yourself with the options.
