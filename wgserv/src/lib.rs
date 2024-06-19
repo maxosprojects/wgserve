@@ -6,6 +6,12 @@ use std::net::{IpAddr, SocketAddr};
 use std::ptr::null_mut;
 use tracing::{info, error};
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+use udp_over_tcp::{self, tcp2udp};
+use udp_over_tcp::tcp2udp::Tcp2UdpError;
+use core::net::SocketAddrV4;
+use core::net::Ipv4Addr;
+use std::convert::Infallible;
+use std::sync::Arc;
 
 /*
 JNIEXPORT jstring JNICALL Java_org_vi_1server_wgserver_Native_setConfig
@@ -146,6 +152,14 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
     app.config = None;
     let _ = Box::into_raw(app);
 
+    let notify_shutdown = Arc::new(tokio::sync::Notify::new());
+    
+    let notify_shutdown_clone = notify_shutdown.clone();
+    tokio::spawn(async move {
+        let _ = rx_shutdown.await;
+        notify_shutdown_clone.notify_waiters();
+    });
+
     let _tracing = {
         let s = tracing_subscriber::registry();
         let a = tracing_android::layer("WgServer").unwrap();
@@ -175,10 +189,14 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_io().enable_time().build().unwrap();
 
-    let ret = rt.block_on(async move {
+    // let ret = rt.block_on(async move {
+    
+    let notify_shutdown_f1 = notify_shutdown.clone();
+    
+    let f1 = async move {
         let f = libwgslirpy::run(wg_config, router_config, config.transmit_queue_capacity);
         let mut jh = tokio::spawn(f);
-        let mut rx_shutdown = rx_shutdown;
+        // let mut rx_shutdown = rx_shutdown;
         info!("Starting wgslirpy");
         loop {
             enum SelectOutcome {
@@ -187,7 +205,8 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
             }
             let ret = tokio::select! {
                 x = &mut jh => SelectOutcome::Returned(x),
-                _ = &mut rx_shutdown => SelectOutcome::Aborted,
+                // _ = &mut rx_shutdown => SelectOutcome::Aborted,
+                _ = notify_shutdown_f1.notified() => SelectOutcome::Aborted,
             };
             match ret {
                 SelectOutcome::Returned(Ok(Err(e))) => {
@@ -204,9 +223,60 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
                 }
             }
         }
+    };
+
+    let notify_shutdown_f2 = notify_shutdown.clone();
+
+    let f2 = async move {
+        let tcp_addr = vec![config.bind_ip_port];
+        let udp_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, config.bind_ip_port.port()));
+        let tcp2udp_options = tcp2udp::Options::new(
+            tcp_addr,
+            udp_addr
+        );
+        let f = udp_over_tcp::tcp2udp::run(tcp2udp_options);
+
+        // let f = libwgslirpy::run(wg_config, router_config, config.transmit_queue_capacity);
+        let mut jh = tokio::spawn(f);
+        // let mut rx_shutdown = rx_shutdown;
+        info!("Starting tcp2udp");
+        loop {
+            enum SelectOutcome {
+                Returned(Result<Result<Infallible, Tcp2UdpError>, tokio::task::JoinError>),
+                Aborted,
+            }
+            let ret = tokio::select! {
+                x = &mut jh => SelectOutcome::Returned(x),
+                // _ = &mut rx_shutdown => SelectOutcome::Aborted,
+                _ = notify_shutdown_f2.notified() => SelectOutcome::Aborted,
+            };
+            match ret {
+                SelectOutcome::Returned(Ok(Err(e))) => {
+                    error!("Failed to run tcp2udp: {e}");
+                    return format!("{e}");
+                }
+                SelectOutcome::Returned(_) => {
+                    error!("Abnormal exit");
+                    return format!("Abnormal exit");
+                }
+                SelectOutcome::Aborted => {
+                    jh.abort();
+                    return "".to_owned();
+                }
+            }
+        }
+    };
+
+    // });
+
+    let ret = rt.block_on(async {
+        return futures::join!(f1, f2);
     });
 
-    return env.new_string(ret).unwrap().into_raw()
+    // let ret = rt.block_on(futures_joined());
+
+    // return env.new_string(ret).unwrap().into_raw()
+    return env.new_string(ret.0).unwrap().into_raw()
 }
 
 #[no_mangle]
@@ -215,33 +285,38 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_getSampleConfig(
     _class: JClass,
 ) -> jstring {
     let sample_config = Config {
-        debug: false,
-        private_key: "SG43Zi0wGp4emfJ/XpTnnmtnK8SSjjIHOc3Zh37c928=".to_owned(),
-        peer_key: "rPpCjWzIv/yAtZZi+C/pVprie8D0QaGlPtJXlDi6bmI=".to_owned(),
-        peer_endpoint: Some("192.168.0.185:9796".parse().unwrap()),
+        debug: true,
+        private_key: "4E4npXgGTLPE/1o25Ewz6WzugXjj9fRA1sIdgGFwR38=".to_owned(),
+        peer_key: "c5Hiwoc50CTASEo8DvIcE0g2eJcUsNQdqrQ9ddMlxQo=".to_owned(),
+        // peer_key: "LOEtbUZ3a/4JzZR7bNofx3JaWzwije9PTM8YNAuIziU=".to_owned(),
+        peer_endpoint: Some("192.168.12.1:9797".parse().unwrap()),
         keepalive_interval: Some(15),
-        bind_ip_port: "0.0.0.0:9797".parse().unwrap(),
-        dns_addr: Some("10.0.2.1:53".parse().unwrap()),
-        pingable: Some("10.0.2.1".parse().unwrap()),
+        bind_ip_port: "192.168.12.15:9797".parse().unwrap(),
+        // From libwgslirpy: If UDP datagrams are directed at this socket address then attempt to reply to a DNS request internally instead of forwarding the datagram properly
+        dns_addr: Some("8.8.8.8:53".parse().unwrap()),
+        // From libwgslirpy: If ICMP or ICMPv6 packet is directed at this address, route it to smoltcp's interface (which will reply to ICMP echo requests) instead of dropping it.
+        pingable: Some("192.168.24.2".parse().unwrap()),
         mtu: 1420,
         tcp_buffer_size: 65536,
-        incoming_udp: vec![PortForward {
-            host: "0.0.0.0:8053".parse().unwrap(),
-            src: Some("99.99.99.99:99".parse().unwrap()),
-            dst: "10.0.2.15:5353".parse().unwrap(),
-        }],
-        incoming_tcp: vec![
-            PortForward {
-                host: "0.0.0.0:8080".parse().unwrap(),
-                src: None,
-                dst: "10.0.2.15:80".parse().unwrap(),
-            },
-            PortForward {
-                host: "0.0.0.0:2222".parse().unwrap(),
-                src: None,
-                dst: "10.0.2.15:22".parse().unwrap(),
-            },
-        ],
+        // incoming_udp: vec![PortForward {
+        //     host: "0.0.0.0:8053".parse().unwrap(),
+        //     src: Some("99.99.99.99:99".parse().unwrap()),
+        //     dst: "10.0.2.15:5353".parse().unwrap(),
+        // }],
+        incoming_udp: vec![],
+        // incoming_tcp: vec![
+        //     PortForward {
+        //         host: "0.0.0.0:8080".parse().unwrap(),
+        //         src: None,
+        //         dst: "10.0.2.15:80".parse().unwrap(),
+        //     },
+        //     PortForward {
+        //         host: "0.0.0.0:2222".parse().unwrap(),
+        //         src: None,
+        //         dst: "10.0.2.15:22".parse().unwrap(),
+        //     },
+        // ],
+        incoming_tcp: vec![],
         transmit_queue_capacity: 128,
     };
     let output = env

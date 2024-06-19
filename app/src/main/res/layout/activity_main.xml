@@ -25,6 +25,12 @@
             android:text="Stop" />
 
         <Button
+            android:id="@+id/bCustomAction"
+            android:layout_width="wrap_content"
+            android:layout_height="30pt"
+            android:text="Action" />
+
+        <Button
             android:id="@+id/bSampleConfig"
             android:layout_width="wrap_content"
             android:layout_height="30pt"

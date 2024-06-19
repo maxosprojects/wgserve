@@ -15,10 +15,11 @@ Basically it is [wgslirpy](https://github.com/vi/wgslirpy) tool, but as an Andro
 
 # Usage steps
 
-1. Build the app from source code or download it from releases
+1. Build the app from source code or download it from releases. Good intro on Rust in Android: https://github.com/ssrlive/rust_on_android_ios
    - `rustup target add aarch64-linux-android`
    - `cargo install cargo-ndk`
-   - `cargo ndk -t arm64-v8a -o ..\app\src\main\jniLibs\  build`
+   - `gradlew cargoBuild` OR
+     - `cargo ndk -t arm64-v8a -o ..\app\src\main\jniLibs\  build` from the nested `wgserv` folder
 2. Launch
 3. Press "Sample config". Obviously, do not use that private key for real.
 4. Adjust IP addresses and keys. Remove unnesesary settings. When in doubt, experiment with `wgslirpy` CLI tool first to familiarize yourself with the options.
