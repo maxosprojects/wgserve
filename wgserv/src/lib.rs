@@ -140,12 +140,23 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
     _class: JClass,
     instance: jlong,
 ) -> jstring {
+
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Trace)
+            .with_tag("WgServer"),
+    );
+
+    info!("Executing Java_org_vi_1server_wgserver_Native_run...");
+
     let mut app = unsafe { Box::from_raw(instance as usize as *mut App) };
 
     let Some(config) = app.config else {
         let _ = Box::into_raw(app);
         return env.new_string("setConfig should precede run").unwrap().into_raw()
     };
+
+    let rt = tokio::runtime::Builder::new_current_thread().enable_io().enable_time().build().unwrap();
 
     let (tx, rx_shutdown) = tokio::sync::oneshot::channel();
     app.shutdown = Some(tx);
@@ -155,7 +166,7 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
     let notify_shutdown = Arc::new(tokio::sync::Notify::new());
     
     let notify_shutdown_clone = notify_shutdown.clone();
-    tokio::spawn(async move {
+    rt.spawn(async move {
         let _ = rx_shutdown.await;
         notify_shutdown_clone.notify_waiters();
     });
@@ -171,6 +182,8 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
         tracing::subscriber::set_default(s.with(a).with(lf))
     };
 
+    let bind_ip_port = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, config.bind_ip_port.port()));
+
     let router_config = libwgslirpy::router::Opts {
         dns_addr: config.dns_addr,
         pingable: config.pingable,
@@ -184,10 +197,9 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
         peer_key: libwgslirpy::parsebase64_32(&config.peer_key).unwrap().into(),
         peer_endpoint: config.peer_endpoint,
         keepalive_interval: config.keepalive_interval,
-        bind_ip_port: config.bind_ip_port,
+        // bind_ip_port: config.bind_ip_port,
+        bind_ip_port: bind_ip_port,
     };
-
-    let rt = tokio::runtime::Builder::new_current_thread().enable_io().enable_time().build().unwrap();
 
     // let ret = rt.block_on(async move {
     
@@ -214,8 +226,8 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
                     return format!("{e}");
                 }
                 SelectOutcome::Returned(_) => {
-                    error!("Abnormal exit");
-                    return format!("Abnormal exit");
+                    error!("Abnormal exit of wgslirpy");
+                    return format!("Abnormal exit of wgslirpy");
                 }
                 SelectOutcome::Aborted => {
                     jh.abort();
@@ -229,7 +241,7 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
 
     let f2 = async move {
         let tcp_addr = vec![config.bind_ip_port];
-        let udp_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, config.bind_ip_port.port()));
+        let udp_addr = bind_ip_port;
         let tcp2udp_options = tcp2udp::Options::new(
             tcp_addr,
             udp_addr
@@ -256,8 +268,54 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
                     return format!("{e}");
                 }
                 SelectOutcome::Returned(_) => {
-                    error!("Abnormal exit");
-                    return format!("Abnormal exit");
+                    error!("Abnormal exit of tcp2udp");
+                    return format!("Abnormal exit of tcp2udp");
+                }
+                SelectOutcome::Aborted => {
+                    jh.abort();
+                    return "".to_owned();
+                }
+            }
+        }
+    };
+
+    let notify_shutdown_f3 = notify_shutdown.clone();
+
+    let f3 = async move {
+        let udp_addr = config.peer_endpoint.unwrap();
+        let tcp_addr = "192.168.0.10:9797".parse().unwrap();
+        let tcp_options = udp_over_tcp::TcpOptions::default();
+
+        let f = match udp_over_tcp::udp2tcp::Udp2Tcp::new(udp_addr, tcp_addr, tcp_options).await {
+            Ok(udp2tcp) => udp2tcp.run(),
+            Err(e) => {
+                error!("Failed to create Udp2Tcp: {e}");
+                return format!("Failed to create Udp2Tcp: {e}");
+            }
+        };
+
+        // let f = libwgslirpy::run(wg_config, router_config, config.transmit_queue_capacity);
+        let mut jh = tokio::spawn(f);
+        // let mut rx_shutdown = rx_shutdown;
+        info!("Starting udp2tcp");
+        loop {
+            enum SelectOutcome {
+                Returned(Result<Result<(), udp_over_tcp::udp2tcp::Error>, tokio::task::JoinError>),
+                Aborted,
+            }
+            let ret = tokio::select! {
+                x = &mut jh => SelectOutcome::Returned(x),
+                // _ = &mut rx_shutdown => SelectOutcome::Aborted,
+                _ = notify_shutdown_f3.notified() => SelectOutcome::Aborted,
+            };
+            match ret {
+                SelectOutcome::Returned(Ok(Err(e))) => {
+                    error!("Failed to run udp2tcp: {e}");
+                    return format!("{e}");
+                }
+                SelectOutcome::Returned(_) => {
+                    error!("Abnormal exit of udp2tcp");
+                    return format!("Abnormal exit of udp2tcp");
                 }
                 SelectOutcome::Aborted => {
                     jh.abort();
@@ -270,7 +328,7 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
     // });
 
     let ret = rt.block_on(async {
-        return futures::join!(f1, f2);
+        return futures::join!(f1, f2, f3);
     });
 
     // let ret = rt.block_on(futures_joined());
@@ -289,9 +347,9 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_getSampleConfig(
         private_key: "4E4npXgGTLPE/1o25Ewz6WzugXjj9fRA1sIdgGFwR38=".to_owned(),
         peer_key: "c5Hiwoc50CTASEo8DvIcE0g2eJcUsNQdqrQ9ddMlxQo=".to_owned(),
         // peer_key: "LOEtbUZ3a/4JzZR7bNofx3JaWzwije9PTM8YNAuIziU=".to_owned(),
-        peer_endpoint: Some("192.168.12.1:9797".parse().unwrap()),
+        peer_endpoint: Some("127.0.0.1:9797".parse().unwrap()),
         keepalive_interval: Some(15),
-        bind_ip_port: "192.168.12.15:9797".parse().unwrap(),
+        bind_ip_port: "192.168.12.15:9798".parse().unwrap(),
         // From libwgslirpy: If UDP datagrams are directed at this socket address then attempt to reply to a DNS request internally instead of forwarding the datagram properly
         dns_addr: Some("8.8.8.8:53".parse().unwrap()),
         // From libwgslirpy: If ICMP or ICMPv6 packet is directed at this address, route it to smoltcp's interface (which will reply to ICMP echo requests) instead of dropping it.
