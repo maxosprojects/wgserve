@@ -241,7 +241,8 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
 
     let f2 = async move {
         let tcp_addr = vec![config.bind_ip_port];
-        let udp_addr = bind_ip_port;
+        // let udp_addr = bind_ip_port;
+        let udp_addr = "192.168.12.15:4652".parse().unwrap();
         let tcp2udp_options = tcp2udp::Options::new(
             tcp_addr,
             udp_addr
