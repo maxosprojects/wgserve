@@ -86,9 +86,9 @@ public class MainActivity extends Activity {
         {
             Button b = findViewById(R.id.bCustomAction);
             b.setOnClickListener(view -> {
-                sendUdpPacket();
+//                sendUdpPacket();
 //                listenTcp();
-//                listenUdp();
+                listenUdp();
             });
         }
 
@@ -131,7 +131,7 @@ public class MainActivity extends Activity {
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                 udpSocket.receive(packet);
                 String message = new String(packet.getData(), 0, packet.getLength());
-                msg += "Received from " + packet.getAddress().getHostAddress() + ": " + message + "\n";
+                msg += "Received from " + packet.getAddress().getHostAddress() + ":" + packet.getPort() + ": " + message + "\n";
                 safeSetText(msg);
 
                 DatagramPacket outPacket = new DatagramPacket(message.getBytes(), message.length(), packet.getAddress(), packet.getPort());
