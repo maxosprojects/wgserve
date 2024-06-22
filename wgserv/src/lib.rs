@@ -242,10 +242,11 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
     let f2 = async move {
         let tcp_addr = vec![config.bind_ip_port];
         let udp_addr = bind_ip_port;
-        let tcp2udp_options = tcp2udp::Options::new(
+        let mut tcp2udp_options = tcp2udp::Options::new(
             tcp_addr,
             udp_addr
         );
+        tcp2udp_options.udp_bind_addr = config.peer_endpoint;
         let f = udp_over_tcp::tcp2udp::run(tcp2udp_options);
 
         // let f = libwgslirpy::run(wg_config, router_config, config.transmit_queue_capacity);
@@ -279,56 +280,8 @@ pub extern "system" fn Java_org_vi_1server_wgserver_Native_run(
         }
     };
 
-    let notify_shutdown_f3 = notify_shutdown.clone();
-
-    let f3 = async move {
-        let udp_addr = config.peer_endpoint.unwrap();
-        let tcp_addr = "192.168.0.10:9797".parse().unwrap();
-        let tcp_options = udp_over_tcp::TcpOptions::default();
-
-        let f = match udp_over_tcp::udp2tcp::Udp2Tcp::new(udp_addr, tcp_addr, tcp_options).await {
-            Ok(udp2tcp) => udp2tcp.run(),
-            Err(e) => {
-                error!("Failed to create Udp2Tcp: {e}");
-                return format!("Failed to create Udp2Tcp: {e}");
-            }
-        };
-
-        // let f = libwgslirpy::run(wg_config, router_config, config.transmit_queue_capacity);
-        let mut jh = tokio::spawn(f);
-        // let mut rx_shutdown = rx_shutdown;
-        info!("Starting udp2tcp");
-        loop {
-            enum SelectOutcome {
-                Returned(Result<Result<(), udp_over_tcp::udp2tcp::Error>, tokio::task::JoinError>),
-                Aborted,
-            }
-            let ret = tokio::select! {
-                x = &mut jh => SelectOutcome::Returned(x),
-                // _ = &mut rx_shutdown => SelectOutcome::Aborted,
-                _ = notify_shutdown_f3.notified() => SelectOutcome::Aborted,
-            };
-            match ret {
-                SelectOutcome::Returned(Ok(Err(e))) => {
-                    error!("Failed to run udp2tcp: {e}");
-                    return format!("{e}");
-                }
-                SelectOutcome::Returned(_) => {
-                    error!("Abnormal exit of udp2tcp");
-                    return format!("Abnormal exit of udp2tcp");
-                }
-                SelectOutcome::Aborted => {
-                    jh.abort();
-                    return "".to_owned();
-                }
-            }
-        }
-    };
-
-    // });
-
     let ret = rt.block_on(async {
-        return futures::join!(f1, f2, f3);
+        return futures::join!(f1, f2);
     });
 
     // let ret = rt.block_on(futures_joined());
